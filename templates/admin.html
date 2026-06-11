@@ -1,0 +1,309 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>API Admin Dashboard</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-50 min-h-screen font-sans">
+
+  <!-- Header -->
+  <header class="bg-white border-b border-gray-200 px-6 py-4 flex items-center justify-between">
+    <div>
+      <h1 class="text-lg font-semibold text-gray-900">Sales Profitability API</h1>
+      <p class="text-sm text-gray-500">Client Key Management</p>
+    </div>
+    <div class="flex items-center gap-3">
+      <span id="key-status" class="text-sm text-gray-400">Not authenticated</span>
+      <button onclick="changeKey()" class="text-sm text-blue-600 hover:underline">Change key</button>
+    </div>
+  </header>
+
+  <!-- Auth gate -->
+  <div id="auth-screen" class="hidden max-w-md mx-auto mt-24 bg-white rounded-xl shadow-sm border border-gray-200 p-8">
+    <h2 class="text-xl font-semibold text-gray-900 mb-1">Enter your admin key</h2>
+    <p class="text-sm text-gray-500 mb-6">Your key is saved in this browser only — you won't need to enter it again.</p>
+    <input id="key-input" type="password" placeholder="Admin key"
+      class="w-full border border-gray-300 rounded-lg px-4 py-2 text-sm mb-4 focus:outline-none focus:ring-2 focus:ring-blue-500" />
+    <button onclick="saveKey()"
+      class="w-full bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium py-2 rounded-lg transition">
+      Continue
+    </button>
+    <p id="auth-error" class="text-red-500 text-sm mt-3 hidden">Incorrect key — please try again.</p>
+  </div>
+
+  <!-- Main dashboard -->
+  <main id="dashboard" class="hidden max-w-4xl mx-auto px-6 py-8">
+
+    <!-- Create client -->
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm p-6 mb-6">
+      <h2 class="text-base font-semibold text-gray-900 mb-4">Add a new client</h2>
+      <div class="flex gap-3">
+        <input id="new-client-name" type="text" placeholder="Client or company name"
+          class="flex-1 border border-gray-300 rounded-lg px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+        <button onclick="createClient()"
+          class="bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium px-5 py-2 rounded-lg transition whitespace-nowrap">
+          Create key
+        </button>
+      </div>
+    </div>
+
+    <!-- New key reveal -->
+    <div id="new-key-box" class="hidden bg-green-50 border border-green-200 rounded-xl p-6 mb-6">
+      <div class="flex items-start justify-between mb-2">
+        <div>
+          <p class="text-sm font-semibold text-green-800">Key created for <span id="new-key-name"></span></p>
+          <p class="text-xs text-green-600 mt-0.5">This key will only be shown once. Copy it now and send it to your client.</p>
+        </div>
+        <button onclick="document.getElementById('new-key-box').classList.add('hidden')"
+          class="text-green-400 hover:text-green-600 text-lg leading-none">&times;</button>
+      </div>
+      <div class="flex items-center gap-3 mt-3">
+        <code id="new-key-value" class="flex-1 bg-white border border-green-200 rounded-lg px-4 py-2 text-sm text-gray-800 font-mono break-all"></code>
+        <button onclick="copyKey()"
+          class="bg-green-600 hover:bg-green-700 text-white text-sm font-medium px-4 py-2 rounded-lg transition whitespace-nowrap">
+          Copy
+        </button>
+      </div>
+    </div>
+
+    <!-- Client list -->
+    <div class="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
+      <div class="flex items-center justify-between px-6 py-4 border-b border-gray-100">
+        <h2 class="text-base font-semibold text-gray-900">Clients</h2>
+        <button onclick="loadClients()" class="text-sm text-blue-600 hover:underline">Refresh</button>
+      </div>
+
+      <div id="loading" class="text-center py-12 text-sm text-gray-400">Loading…</div>
+      <div id="empty" class="hidden text-center py-12 text-sm text-gray-400">No clients yet. Add one above.</div>
+
+      <table id="client-table" class="hidden w-full text-sm">
+        <thead>
+          <tr class="text-xs text-gray-500 uppercase tracking-wide bg-gray-50 border-b border-gray-100">
+            <th class="text-left px-6 py-3">Name</th>
+            <th class="text-left px-6 py-3">Status</th>
+            <th class="text-left px-6 py-3">Requests</th>
+            <th class="text-left px-6 py-3">Last used</th>
+            <th class="text-left px-6 py-3">Added</th>
+            <th class="px-6 py-3"></th>
+          </tr>
+        </thead>
+        <tbody id="client-rows"></tbody>
+      </table>
+    </div>
+
+  </main>
+
+  <!-- Confirm modal -->
+  <div id="modal" class="hidden fixed inset-0 bg-black/40 flex items-center justify-center z-50">
+    <div class="bg-white rounded-xl shadow-xl p-6 max-w-sm w-full mx-4">
+      <h3 id="modal-title" class="text-base font-semibold text-gray-900 mb-2"></h3>
+      <p id="modal-body" class="text-sm text-gray-500 mb-6"></p>
+      <div class="flex gap-3 justify-end">
+        <button onclick="closeModal()" class="text-sm text-gray-500 hover:text-gray-700 px-4 py-2">Cancel</button>
+        <button id="modal-confirm"
+          class="text-sm font-medium text-white px-4 py-2 rounded-lg transition"></button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    let adminKey = localStorage.getItem('adminKey') || '';
+    let pendingAction = null;
+
+    function init() {
+      if (adminKey) {
+        loadClients();
+      } else {
+        showAuthScreen();
+      }
+    }
+
+    function showAuthScreen() {
+      document.getElementById('auth-screen').classList.remove('hidden');
+      document.getElementById('dashboard').classList.add('hidden');
+      document.getElementById('key-status').textContent = 'Not authenticated';
+    }
+
+    function saveKey() {
+      const val = document.getElementById('key-input').value.trim();
+      if (!val) return;
+      adminKey = val;
+      document.getElementById('auth-error').classList.add('hidden');
+      loadClients();
+    }
+
+    function changeKey() {
+      adminKey = '';
+      localStorage.removeItem('adminKey');
+      document.getElementById('key-input').value = '';
+      showAuthScreen();
+    }
+
+    async function loadClients() {
+      document.getElementById('loading').classList.remove('hidden');
+      document.getElementById('empty').classList.add('hidden');
+      document.getElementById('client-table').classList.add('hidden');
+
+      const res = await fetch('/admin/clients', {
+        headers: { 'X-Admin-Key': adminKey }
+      });
+
+      if (res.status === 401) {
+        document.getElementById('auth-error').classList.remove('hidden');
+        document.getElementById('loading').classList.add('hidden');
+        showAuthScreen();
+        return;
+      }
+
+      localStorage.setItem('adminKey', adminKey);
+      document.getElementById('auth-screen').classList.add('hidden');
+      document.getElementById('dashboard').classList.remove('hidden');
+      document.getElementById('key-status').textContent = 'Authenticated';
+
+      const json = await res.json();
+      const clients = json.data || [];
+
+      document.getElementById('loading').classList.add('hidden');
+
+      if (clients.length === 0) {
+        document.getElementById('empty').classList.remove('hidden');
+        return;
+      }
+
+      document.getElementById('client-table').classList.remove('hidden');
+      const tbody = document.getElementById('client-rows');
+      tbody.innerHTML = '';
+
+      clients.forEach(c => {
+        const active = c.active;
+        const lastUsed = c.last_used ? formatDate(c.last_used) : 'Never';
+        const createdAt = formatDate(c.created_at);
+        const row = document.createElement('tr');
+        row.className = 'border-b border-gray-100 last:border-0 hover:bg-gray-50';
+        row.innerHTML = `
+          <td class="px-6 py-4 font-medium text-gray-900">${esc(c.name)}</td>
+          <td class="px-6 py-4">
+            <span class="inline-flex items-center gap-1.5 text-xs font-medium px-2.5 py-1 rounded-full ${active ? 'bg-green-50 text-green-700' : 'bg-red-50 text-red-600'}">
+              <span class="w-1.5 h-1.5 rounded-full ${active ? 'bg-green-500' : 'bg-red-400'}"></span>
+              ${active ? 'Active' : 'Revoked'}
+            </span>
+          </td>
+          <td class="px-6 py-4 text-gray-600">${c.request_count.toLocaleString()}</td>
+          <td class="px-6 py-4 text-gray-500">${lastUsed}</td>
+          <td class="px-6 py-4 text-gray-500">${createdAt}</td>
+          <td class="px-6 py-4 text-right">
+            ${active
+              ? `<button onclick="confirmRevoke(${c.id}, '${esc(c.name)}')" class="text-red-500 hover:text-red-700 text-sm font-medium">Revoke</button>`
+              : `<button onclick="confirmRestore(${c.id}, '${esc(c.name)}')" class="text-blue-600 hover:text-blue-800 text-sm font-medium">Restore</button>`
+            }
+          </td>
+        `;
+        tbody.appendChild(row);
+      });
+    }
+
+    async function createClient() {
+      const name = document.getElementById('new-client-name').value.trim();
+      if (!name) { alert('Please enter a client name.'); return; }
+
+      const res = await fetch('/admin/clients', {
+        method: 'POST',
+        headers: { 'X-Admin-Key': adminKey, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name })
+      });
+      const json = await res.json();
+
+      if (!res.ok) { alert(json.error || 'Something went wrong.'); return; }
+
+      document.getElementById('new-client-name').value = '';
+      document.getElementById('new-key-name').textContent = json.client.name;
+      document.getElementById('new-key-value').textContent = json.client.api_key;
+      document.getElementById('new-key-box').classList.remove('hidden');
+      document.getElementById('new-key-box').scrollIntoView({ behavior: 'smooth' });
+      loadClients();
+    }
+
+    function copyKey() {
+      const key = document.getElementById('new-key-value').textContent;
+      navigator.clipboard.writeText(key).then(() => {
+        const btn = event.target;
+        btn.textContent = 'Copied!';
+        setTimeout(() => btn.textContent = 'Copy', 2000);
+      });
+    }
+
+    function confirmRevoke(id, name) {
+      showModal(
+        `Revoke ${name}?`,
+        `Their API key will stop working immediately. You can restore it at any time.`,
+        'Revoke',
+        'bg-red-600 hover:bg-red-700',
+        () => revokeClient(id)
+      );
+    }
+
+    function confirmRestore(id, name) {
+      showModal(
+        `Restore ${name}?`,
+        `Their API key will start working again immediately.`,
+        'Restore',
+        'bg-blue-600 hover:bg-blue-700',
+        () => restoreClient(id)
+      );
+    }
+
+    async function revokeClient(id) {
+      closeModal();
+      await fetch(`/admin/clients/${id}/revoke`, {
+        method: 'POST', headers: { 'X-Admin-Key': adminKey }
+      });
+      loadClients();
+    }
+
+    async function restoreClient(id) {
+      closeModal();
+      await fetch(`/admin/clients/${id}/restore`, {
+        method: 'POST', headers: { 'X-Admin-Key': adminKey }
+      });
+      loadClients();
+    }
+
+    function showModal(title, body, confirmText, btnClass, action) {
+      document.getElementById('modal-title').textContent = title;
+      document.getElementById('modal-body').textContent = body;
+      const btn = document.getElementById('modal-confirm');
+      btn.textContent = confirmText;
+      btn.className = `text-sm font-medium text-white px-4 py-2 rounded-lg transition ${btnClass}`;
+      btn.onclick = action;
+      document.getElementById('modal').classList.remove('hidden');
+    }
+
+    function closeModal() {
+      document.getElementById('modal').classList.add('hidden');
+    }
+
+    function formatDate(iso) {
+      const d = new Date(iso);
+      return d.toLocaleDateString('en-GB', { day: 'numeric', month: 'short', year: 'numeric' });
+    }
+
+    function esc(str) {
+      return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    document.getElementById('key-input').addEventListener('keydown', e => {
+      if (e.key === 'Enter') saveKey();
+    });
+    document.getElementById('new-client-name').addEventListener('keydown', e => {
+      if (e.key === 'Enter') createClient();
+    });
+    document.getElementById('modal').addEventListener('click', e => {
+      if (e.target === document.getElementById('modal')) closeModal();
+    });
+
+    init();
+  </script>
+</body>
+</html>
