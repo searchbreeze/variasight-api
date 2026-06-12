@@ -305,7 +305,7 @@ def predict():
         return jsonify({"error": "Invalid or missing JSON body"}), 400
 
     if isinstance(data, list):
-        return jsonify({"error": "Use /rank for multiple products"}), 400
+        return jsonify({"data": [build_result(item) for item in data]})
 
     target_margin = data.get("target_margin")
     return jsonify({"data": build_result(data, target_margin)})
