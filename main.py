@@ -223,17 +223,19 @@ def calculate_optimal_price(net_sales, cogs, returns, discounts, current_price, 
     recommended_price = cogs_per_unit / margin_denominator
 
     price_gap = recommended_price - current_price
-    if price_gap > 0:
-        pricing_action = f"Increase price by {abs(price_gap):.2f} to hit {target_margin}% margin target."
+    current_price_is_healthy = price_gap <= 0.01
+    if price_gap > 0.01:
+        pricing_action = f"Price is below the {target_margin}% margin target. Raise to at least {recommended_price:.2f} to hit your target."
     elif price_gap < -0.01:
-        pricing_action = f"Price is above target — you have {abs(price_gap):.2f} of pricing headroom."
+        pricing_action = f"Your current price already exceeds the {target_margin}% target. Minimum price to maintain target: {recommended_price:.2f}."
     else:
-        pricing_action = "Price is already at the target margin."
+        pricing_action = f"Price is exactly at the {target_margin}% margin target."
 
     return {
         "current_price": round(current_price, 2),
         "breakeven_price": round(breakeven_price, 2),
-        "recommended_price": round(recommended_price, 2),
+        "minimum_price_for_target": round(recommended_price, 2),
+        "current_price_is_healthy": current_price_is_healthy,
         "target_margin_pct": round(target_margin, 1),
         "pricing_action": pricing_action,
     }
