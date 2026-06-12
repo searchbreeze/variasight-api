@@ -194,7 +194,52 @@ def calculate_profit_probability(net_sales, cogs, profit, returns, discounts):
     return round(combined * 100, 2)
 
 
-def build_result(item):
+def calculate_optimal_price(net_sales, cogs, returns, discounts, current_price, target_margin):
+    net_sales = float(net_sales)
+    cogs = float(cogs)
+    returns = float(returns)
+    discounts = float(discounts)
+    current_price = float(current_price)
+    target_margin = float(target_margin)
+
+    if net_sales <= 0 or current_price <= 0:
+        return None
+
+    return_rate = min(returns / net_sales, 0.99)
+    discount_rate = min(discounts / net_sales, 0.99)
+    cogs_per_unit = cogs * current_price / net_sales
+
+    effective_denominator = (1 - return_rate) * (1 - discount_rate)
+    if effective_denominator <= 0:
+        return None
+
+    breakeven_price = cogs_per_unit / effective_denominator
+
+    target = max(0.0, min(target_margin, 99.0))
+    margin_denominator = (1 - target / 100) * effective_denominator
+    if margin_denominator <= 0:
+        return None
+
+    recommended_price = cogs_per_unit / margin_denominator
+
+    price_gap = recommended_price - current_price
+    if price_gap > 0:
+        pricing_action = f"Increase price by {abs(price_gap):.2f} to hit {target_margin}% margin target."
+    elif price_gap < -0.01:
+        pricing_action = f"Price is above target — you have {abs(price_gap):.2f} of pricing headroom."
+    else:
+        pricing_action = "Price is already at the target margin."
+
+    return {
+        "current_price": round(current_price, 2),
+        "breakeven_price": round(breakeven_price, 2),
+        "recommended_price": round(recommended_price, 2),
+        "target_margin_pct": round(target_margin, 1),
+        "pricing_action": pricing_action,
+    }
+
+
+def build_result(item, target_margin=None):
     prob = calculate_profit_probability(
         item.get("net_sales", 0),
         item.get("cogs", 0),
@@ -203,7 +248,7 @@ def build_result(item):
         item.get("discounts", 0),
     )
     margin = get_margin_health(item.get("net_sales", 0), item.get("cogs", 0))
-    return {
+    result = {
         "product": item.get("product", "Unknown"),
         "profit_probability": prob,
         "requires_attention": bool(prob < 40),
@@ -212,6 +257,22 @@ def build_result(item):
         "margin_health": margin,
         "overall_score": get_overall_score(prob, margin),
     }
+
+    current_price = item.get("current_price")
+    effective_margin = target_margin if target_margin is not None else item.get("target_margin")
+    if current_price is not None and effective_margin is not None:
+        pricing = calculate_optimal_price(
+            item.get("net_sales", 0),
+            item.get("cogs", 0),
+            item.get("returns", 0),
+            item.get("discounts", 0),
+            current_price,
+            effective_margin,
+        )
+        if pricing:
+            result["pricing"] = pricing
+
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -244,9 +305,10 @@ def predict():
         return jsonify({"error": "Invalid or missing JSON body"}), 400
 
     if isinstance(data, list):
-        return jsonify({"data": [build_result(item) for item in data]})
-    else:
-        return jsonify({"data": build_result(data)})
+        return jsonify({"error": "Use /rank for multiple products"}), 400
+
+    target_margin = data.get("target_margin")
+    return jsonify({"data": build_result(data, target_margin)})
 
 
 @app.route("/rank", methods=["POST"])
@@ -257,7 +319,14 @@ def rank():
     if data is None:
         return jsonify({"error": "Invalid or missing JSON body"}), 400
 
-    results = [build_result(item) for item in data]
+    if isinstance(data, dict):
+        products = data.get("products", [])
+        target_margin = data.get("target_margin")
+    else:
+        products = data
+        target_margin = None
+
+    results = [build_result(item, target_margin) for item in products]
     ranked = sorted(results, key=lambda x: x["overall_score"], reverse=True)
     for i, item in enumerate(ranked):
         item["rank"] = i + 1
