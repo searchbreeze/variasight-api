@@ -239,6 +239,9 @@ def calculate_optimal_price(net_sales, cogs, returns, discounts, current_price, 
     }
 
 
+DEFAULT_TARGET_MARGIN = 40.0
+
+
 def build_result(item, target_margin=None):
     prob = calculate_profit_probability(
         item.get("net_sales", 0),
@@ -259,8 +262,11 @@ def build_result(item, target_margin=None):
     }
 
     current_price = item.get("current_price")
-    effective_margin = target_margin if target_margin is not None else item.get("target_margin")
-    if current_price is not None and effective_margin is not None:
+    if current_price is not None:
+        effective_margin = (
+            target_margin if target_margin is not None
+            else item.get("target_margin", DEFAULT_TARGET_MARGIN)
+        )
         pricing = calculate_optimal_price(
             item.get("net_sales", 0),
             item.get("cogs", 0),
