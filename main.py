@@ -191,7 +191,50 @@ def calculate_profit_probability(net_sales, cogs, profit, returns, discounts):
     mc_probability = np.mean(simulations >= profit * 0.9)
 
     combined = (posterior * 0.60) + (mc_probability * 0.40)
-    return round(combined * 100, 2)
+
+    # Confidence interval from simulation distribution (5th–95th percentile)
+    sim_probabilities = (simulations >= profit * 0.9).astype(float)
+    sim_chunks = sim_probabilities.reshape(10, 100)
+    chunk_means = sim_chunks.mean(axis=1)
+    blended_chunks = chunk_means * 0.40 + posterior * 0.60
+    ci_low = round(float(np.percentile(blended_chunks, 5)) * 100, 2)
+    ci_high = round(float(np.percentile(blended_chunks, 95)) * 100, 2)
+
+    return round(combined * 100, 2), ci_low, ci_high
+
+
+def calculate_breakeven_units(net_sales, cogs, returns, discounts, units_sold):
+    net_sales = float(net_sales)
+    cogs = float(cogs)
+    returns = float(returns)
+    discounts = float(discounts)
+    units_sold = float(units_sold)
+
+    if units_sold <= 0 or net_sales <= 0:
+        return None
+
+    revenue_per_unit = net_sales / units_sold
+    cogs_per_unit = cogs / units_sold
+    returns_per_unit = returns / units_sold
+    discounts_per_unit = discounts / units_sold
+
+    net_revenue_per_unit = revenue_per_unit - returns_per_unit - discounts_per_unit
+    contribution_per_unit = net_revenue_per_unit - cogs_per_unit
+
+    if contribution_per_unit <= 0:
+        return None
+
+    breakeven_units = cogs / contribution_per_unit
+    return round(breakeven_units, 0)
+
+
+def calculate_cogs_stress(net_sales, cogs, profit, returns, discounts, cogs_increase_pct):
+    stressed_cogs = cogs * (1 + float(cogs_increase_pct) / 100)
+    stressed_profit = profit - (stressed_cogs - cogs)
+    stressed_prob, _, _ = calculate_profit_probability(
+        net_sales, stressed_cogs, stressed_profit, returns, discounts
+    )
+    return round(stressed_prob, 2)
 
 
 def calculate_optimal_price(net_sales, cogs, returns, discounts, current_price, target_margin):
@@ -245,17 +288,22 @@ DEFAULT_TARGET_MARGIN = 40.0
 
 
 def build_result(item, target_margin=None):
-    prob = calculate_profit_probability(
-        item.get("net_sales", 0),
-        item.get("cogs", 0),
-        item.get("profit", 0),
-        item.get("returns", 0),
-        item.get("discounts", 0),
+    net_sales = item.get("net_sales", 0)
+    cogs = item.get("cogs", 0)
+    profit = item.get("profit", 0)
+    returns = item.get("returns", 0)
+    discounts = item.get("discounts", 0)
+
+    prob, ci_low, ci_high = calculate_profit_probability(
+        net_sales, cogs, profit, returns, discounts
     )
-    margin = get_margin_health(item.get("net_sales", 0), item.get("cogs", 0))
+    margin = get_margin_health(net_sales, cogs)
     result = {
         "product": item.get("product", "Unknown"),
         "profit_probability": prob,
+        "probability_range": f"{ci_low}%–{ci_high}%",
+        "probability_low": ci_low,
+        "probability_high": ci_high,
         "requires_attention": bool(prob < 40),
         "risk_level": "High" if prob < 40 else "Medium" if prob < 70 else "Low",
         "recommendation": get_recommendation(prob),
@@ -263,6 +311,33 @@ def build_result(item, target_margin=None):
         "overall_score": get_overall_score(prob, margin),
     }
 
+    # Break-even units (optional — requires units_sold in input)
+    units_sold = item.get("units_sold")
+    if units_sold is not None:
+        beu = calculate_breakeven_units(net_sales, cogs, returns, discounts, units_sold)
+        result["breakeven_units"] = beu
+        if beu is not None:
+            result["breakeven_units_note"] = (
+                f"You need to sell at least {int(beu)} units to break even."
+            )
+
+    # COGS stress-test (optional — requires cogs_increase_pct in input)
+    cogs_increase_pct = item.get("cogs_increase_pct")
+    if cogs_increase_pct is not None:
+        stressed_prob = calculate_cogs_stress(
+            net_sales, cogs, profit, returns, discounts, cogs_increase_pct
+        )
+        result["cogs_stress"] = {
+            "cogs_increase_pct": float(cogs_increase_pct),
+            "stressed_profit_probability": stressed_prob,
+            "impact": round(stressed_prob - prob, 2),
+            "stress_note": (
+                f"If COGS rise {cogs_increase_pct}%, profit probability drops from "
+                f"{prob}% to {stressed_prob}% ({round(stressed_prob - prob, 2):+.2f}%)."
+            ),
+        }
+
+    # Pricing (optional — requires current_price in input)
     current_price = item.get("current_price")
     if current_price is not None:
         effective_margin = (
@@ -270,12 +345,7 @@ def build_result(item, target_margin=None):
             else item.get("target_margin", DEFAULT_TARGET_MARGIN)
         )
         pricing = calculate_optimal_price(
-            item.get("net_sales", 0),
-            item.get("cogs", 0),
-            item.get("returns", 0),
-            item.get("discounts", 0),
-            current_price,
-            effective_margin,
+            net_sales, cogs, returns, discounts, current_price, effective_margin
         )
         if pricing:
             result["pricing"] = pricing
