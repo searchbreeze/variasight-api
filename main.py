@@ -357,31 +357,66 @@ def build_result(item, target_margin=None):
 # Prediction endpoints
 # ---------------------------------------------------------------------------
 
-def aggregate_rows_by_product(rows):
-    """Aggregate date-level rows into one summary dict per product."""
-    SUM_FIELDS = ["net_sales", "cogs", "profit", "returns", "discounts", "units_sold"]
+def aggregate_rows_by_product(rows, costs=None):
+    """
+    Aggregate date-level rows into one summary dict per product.
+
+    costs (optional): list of {product, cogs_per_unit} or {product, total_cogs}.
+    If provided, COGS is derived from the costs lookup instead of requiring it
+    on every row. This lets clients send a raw sales export + a small cost table.
+    """
+    SUM_FIELDS = ["net_sales", "returns", "discounts", "units_sold", "cogs"]
     LAST_FIELDS = ["current_price", "cogs_increase_pct"]
+
+    # Build costs lookup: product name (lowercased) → cost dict
+    costs_lookup = {}
+    if costs:
+        for c in costs:
+            name = str(c.get("product", "")).strip().lower()
+            if name:
+                costs_lookup[name] = c
 
     totals = {}
     for row in rows:
         name = str(row.get("product", "Unknown")).strip()
-        if name not in totals:
-            totals[name] = {f: 0.0 for f in SUM_FIELDS}
-            totals[name].update({f: None for f in LAST_FIELDS})
-            totals[name]["product"] = name
+        key = name.lower()
+        if key not in totals:
+            totals[key] = {f: 0.0 for f in SUM_FIELDS}
+            totals[key].update({f: None for f in LAST_FIELDS})
+            totals[key]["product"] = name
         for f in SUM_FIELDS:
             if row.get(f) is not None:
-                totals[name][f] += float(row[f])
+                totals[key][f] += float(row[f])
         for f in LAST_FIELDS:
             if row.get(f) is not None:
-                totals[name][f] = row[f]
+                totals[key][f] = row[f]
 
-    # Remove optional fields that were never provided (stay None → omitted)
     results = []
-    for item in totals.values():
-        clean = {k: v for k, v in item.items() if v is not None and v != 0.0 or k in ("product", "net_sales", "cogs", "profit", "returns", "discounts")}
+    skipped = []
+    for key, item in totals.items():
+        # Apply costs lookup if inline cogs not supplied via rows
+        if item["cogs"] == 0.0 and key in costs_lookup:
+            c = costs_lookup[key]
+            if c.get("cogs_per_unit") is not None and item["units_sold"] > 0:
+                item["cogs"] = float(c["cogs_per_unit"]) * item["units_sold"]
+            elif c.get("total_cogs") is not None:
+                item["cogs"] = float(c["total_cogs"])
+
+        # Require cogs to proceed
+        if item["cogs"] == 0.0:
+            skipped.append(item["product"])
+            continue
+
+        # Derive profit from aggregated figures
+        item["profit"] = item["net_sales"] - item["cogs"]
+
+        # Clean up: remove optional zero/None fields except core ones
+        core = {"product", "net_sales", "cogs", "profit", "returns", "discounts"}
+        clean = {k: v for k, v in item.items()
+                 if k in core or (v is not None and v != 0.0)}
         results.append(clean)
-    return results
+
+    return results, skipped
 
 
 @app.route("/", methods=["GET"])
@@ -447,25 +482,40 @@ def analyse_csv():
     if data is None:
         return jsonify({"error": "Invalid or missing JSON body"}), 400
 
-    rows = data if isinstance(data, list) else data.get("rows", [])
+    if isinstance(data, list):
+        rows = data
+        costs = None
+        target_margin = None
+    else:
+        rows = data.get("rows", [])
+        costs = data.get("costs")
+        target_margin = data.get("target_margin")
+
     if not rows:
         return jsonify({"error": "No rows provided. Send an array of date-level rows."}), 400
 
-    aggregated = aggregate_rows_by_product(rows)
-    target_margin = data.get("target_margin") if isinstance(data, dict) else None
+    aggregated, skipped = aggregate_rows_by_product(rows, costs)
+
+    if not aggregated:
+        return jsonify({
+            "error": "No products could be analysed. Provide COGS via inline rows or the 'costs' lookup.",
+            "skipped": skipped,
+        }), 400
 
     results = [build_result(item, target_margin) for item in aggregated]
     ranked = sorted(results, key=lambda x: x["overall_score"], reverse=True)
     for i, item in enumerate(ranked):
         item["rank"] = i + 1
 
-    return jsonify({
-        "data": ranked,
-        "meta": {
-            "rows_received": len(rows),
-            "products_found": len(ranked),
-        }
-    })
+    meta = {
+        "rows_received": len(rows),
+        "products_found": len(ranked),
+    }
+    if skipped:
+        meta["skipped_products"] = skipped
+        meta["skip_reason"] = "No COGS data found. Add these products to the 'costs' array."
+
+    return jsonify({"data": ranked, "meta": meta})
 
 
 # ---------------------------------------------------------------------------
