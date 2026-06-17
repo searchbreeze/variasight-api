@@ -357,6 +357,33 @@ def build_result(item, target_margin=None):
 # Prediction endpoints
 # ---------------------------------------------------------------------------
 
+def aggregate_rows_by_product(rows):
+    """Aggregate date-level rows into one summary dict per product."""
+    SUM_FIELDS = ["net_sales", "cogs", "profit", "returns", "discounts", "units_sold"]
+    LAST_FIELDS = ["current_price", "cogs_increase_pct"]
+
+    totals = {}
+    for row in rows:
+        name = str(row.get("product", "Unknown")).strip()
+        if name not in totals:
+            totals[name] = {f: 0.0 for f in SUM_FIELDS}
+            totals[name].update({f: None for f in LAST_FIELDS})
+            totals[name]["product"] = name
+        for f in SUM_FIELDS:
+            if row.get(f) is not None:
+                totals[name][f] += float(row[f])
+        for f in LAST_FIELDS:
+            if row.get(f) is not None:
+                totals[name][f] = row[f]
+
+    # Remove optional fields that were never provided (stay None → omitted)
+    results = []
+    for item in totals.values():
+        clean = {k: v for k, v in item.items() if v is not None and v != 0.0 or k in ("product", "net_sales", "cogs", "profit", "returns", "discounts")}
+        results.append(clean)
+    return results
+
+
 @app.route("/", methods=["GET"])
 def index():
     return jsonify({
@@ -365,6 +392,7 @@ def index():
         "endpoints": {
             "POST /predict": "Calculate profit probability for one or multiple products",
             "POST /rank": "Same as /predict but returns products sorted by overall_score",
+            "POST /analyse-csv": "Accept raw date-level rows, aggregate by product, return ranked analysis",
             "GET /healthz": "Health check",
             "POST /admin/clients": "Create a new client key (requires X-Admin-Key)",
             "GET /admin/clients": "List all clients (requires X-Admin-Key)",
@@ -409,6 +437,35 @@ def rank():
     for i, item in enumerate(ranked):
         item["rank"] = i + 1
     return jsonify({"data": ranked})
+
+
+@app.route("/analyse-csv", methods=["POST"])
+@require_api_key
+@limiter.limit("30 per minute")
+def analyse_csv():
+    data = request.get_json(force=True, silent=True)
+    if data is None:
+        return jsonify({"error": "Invalid or missing JSON body"}), 400
+
+    rows = data if isinstance(data, list) else data.get("rows", [])
+    if not rows:
+        return jsonify({"error": "No rows provided. Send an array of date-level rows."}), 400
+
+    aggregated = aggregate_rows_by_product(rows)
+    target_margin = data.get("target_margin") if isinstance(data, dict) else None
+
+    results = [build_result(item, target_margin) for item in aggregated]
+    ranked = sorted(results, key=lambda x: x["overall_score"], reverse=True)
+    for i, item in enumerate(ranked):
+        item["rank"] = i + 1
+
+    return jsonify({
+        "data": ranked,
+        "meta": {
+            "rows_received": len(rows),
+            "products_found": len(ranked),
+        }
+    })
 
 
 # ---------------------------------------------------------------------------
