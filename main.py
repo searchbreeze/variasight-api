@@ -110,6 +110,9 @@ def require_admin_key(f):
 # Maths
 # ---------------------------------------------------------------------------
 
+DEFAULT_TARGET_MARGIN = 40.0
+
+
 def get_overall_score(profit_probability, margin_health):
     return round((profit_probability * 0.6) + (margin_health * 0.4), 2)
 
@@ -203,15 +206,16 @@ def calculate_profit_probability(net_sales, cogs, profit, returns, discounts):
     return round(combined * 100, 2), ci_low, ci_high
 
 
-def calculate_breakeven_units(net_sales, cogs, returns, discounts, units_sold):
+def calculate_unit_targets(net_sales, cogs, returns, discounts, units_sold, target_margin=DEFAULT_TARGET_MARGIN):
     net_sales = float(net_sales)
     cogs = float(cogs)
     returns = float(returns)
     discounts = float(discounts)
     units_sold = float(units_sold)
+    target_margin = float(target_margin)
 
     if units_sold <= 0 or net_sales <= 0:
-        return None
+        return None, None
 
     revenue_per_unit = net_sales / units_sold
     cogs_per_unit = cogs / units_sold
@@ -222,10 +226,33 @@ def calculate_breakeven_units(net_sales, cogs, returns, discounts, units_sold):
     contribution_per_unit = net_revenue_per_unit - cogs_per_unit
 
     if contribution_per_unit <= 0:
-        return None
+        return None, None
 
     breakeven_units = cogs / contribution_per_unit
-    return round(breakeven_units, 0)
+
+    # Units needed so that profit = target_margin% of net revenue
+    # profit_needed = target_margin/100 * net_revenue
+    # net_revenue = units * net_revenue_per_unit
+    # profit = units * contribution_per_unit - fixed_overhead (none here, so:)
+    # units * contribution_per_unit >= target_margin/100 * units * net_revenue_per_unit
+    # contribution_per_unit >= target_margin/100 * net_revenue_per_unit ... per-unit check
+    # But total cogs grows with units, so:
+    # total_profit = units * net_revenue_per_unit - units * cogs_per_unit
+    # target: total_profit / (units * net_revenue_per_unit) = target_margin/100
+    # => units * (nrpu - cogs_pu) / (units * nrpu) = tm/100
+    # => (nrpu - cogs_pu) / nrpu = tm/100  (constant — independent of units)
+    # If current margin_per_unit already meets target, any volume works → return breakeven
+    # If not, it can never be hit at this price — return None
+    if net_revenue_per_unit <= 0:
+        target_units = None
+    else:
+        current_unit_margin_pct = (contribution_per_unit / net_revenue_per_unit) * 100
+        if current_unit_margin_pct >= target_margin:
+            target_units = breakeven_units
+        else:
+            target_units = None
+
+    return round(breakeven_units, 0), (round(target_units, 0) if target_units is not None else None)
 
 
 def calculate_cogs_stress(net_sales, cogs, profit, returns, discounts, cogs_increase_pct):
@@ -284,9 +311,6 @@ def calculate_optimal_price(net_sales, cogs, returns, discounts, current_price, 
     }
 
 
-DEFAULT_TARGET_MARGIN = 40.0
-
-
 def build_result(item, target_margin=None):
     net_sales = item.get("net_sales", 0)
     cogs = item.get("cogs", 0)
@@ -311,14 +335,26 @@ def build_result(item, target_margin=None):
         "overall_score": get_overall_score(prob, margin),
     }
 
-    # Break-even units (optional — requires units_sold in input)
+    # Unit targets (optional — requires units_sold in input)
     units_sold = item.get("units_sold")
+    effective_margin = target_margin if target_margin is not None else DEFAULT_TARGET_MARGIN
     if units_sold is not None:
-        beu = calculate_breakeven_units(net_sales, cogs, returns, discounts, units_sold)
+        beu, target_units = calculate_unit_targets(
+            net_sales, cogs, returns, discounts, units_sold, effective_margin
+        )
         result["breakeven_units"] = beu
         if beu is not None:
             result["breakeven_units_note"] = (
-                f"You need to sell at least {int(beu)} units to break even."
+                f"Sell at least {int(beu)} units to break even."
+            )
+        result["target_units"] = target_units
+        if target_units is not None:
+            result["target_units_note"] = (
+                f"Sell at least {int(target_units)} units to hit the {effective_margin}% margin target."
+            )
+        else:
+            result["target_units_note"] = (
+                f"The current price is too low to reach {effective_margin}% margin at any volume — raise your price first."
             )
 
     # COGS stress-test (optional — requires cogs_increase_pct in input)
