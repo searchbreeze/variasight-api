@@ -412,6 +412,12 @@ def aggregate_rows_by_product(rows, costs=None):
             if name:
                 costs_lookup[name] = c
 
+    def safe_float(value):
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return None
+
     totals = {}
     for row in rows:
         name = str(row.get("product", "Unknown")).strip()
@@ -421,11 +427,13 @@ def aggregate_rows_by_product(rows, costs=None):
             totals[key].update({f: None for f in LAST_FIELDS})
             totals[key]["product"] = name
         for f in SUM_FIELDS:
-            if row.get(f) is not None:
-                totals[key][f] += float(row[f])
+            val = safe_float(row.get(f))
+            if val is not None:
+                totals[key][f] += val
         for f in LAST_FIELDS:
-            if row.get(f) is not None:
-                totals[key][f] = row[f]
+            val = safe_float(row.get(f))
+            if val is not None:
+                totals[key][f] = val
 
     results = []
     skipped = []
@@ -433,10 +441,12 @@ def aggregate_rows_by_product(rows, costs=None):
         # Apply costs lookup if inline cogs not supplied via rows
         if item["cogs"] == 0.0 and key in costs_lookup:
             c = costs_lookup[key]
-            if c.get("cogs_per_unit") is not None and item["units_sold"] > 0:
-                item["cogs"] = float(c["cogs_per_unit"]) * item["units_sold"]
-            elif c.get("total_cogs") is not None:
-                item["cogs"] = float(c["total_cogs"])
+            cpu = safe_float(c.get("cogs_per_unit"))
+            tc = safe_float(c.get("total_cogs"))
+            if cpu is not None and item["units_sold"] > 0:
+                item["cogs"] = cpu * item["units_sold"]
+            elif tc is not None:
+                item["cogs"] = tc
 
         # Require cogs to proceed
         if item["cogs"] == 0.0:
